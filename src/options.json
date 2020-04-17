@@ -17,9 +17,9 @@
       "description": "Provide a cache directory where cache items should be stored (used for default read/write implementation).",
       "type": "string"
     },
-    "compare": {
-      "description": "Allows you to override default comparison function between the cached dependency and the one is being read. Return true to use the cached resource.",
-      "instanceof": "Function"
+    "compareMode": {
+      "description": "Use 'mtime' or 'hash' for comparing between files and cached objects.",
+      "type": "string"
     },
     "precision": {
       "description": "Round mtime by this number of milliseconds both for stats and deps before passing those params to the comparing function.",

@@ -24,7 +24,7 @@ const defaults = {
   cacheDirectory: findCacheDir({ name: 'cache-loader' }) || os.tmpdir(),
   cacheIdentifier: `cache-loader:${pkg.version} ${env}`,
   cacheKey,
-  compare,
+  compareMode: 'mtime',
   precision: 0,
   read,
   readOnly: false,
@@ -82,30 +82,21 @@ function loader(...args) {
   const contextDependencies = this.getContextDependencies();
 
   // Should the file get cached?
-  let cache = true;
+  const cache = true;
   // this.fs can be undefined
   // e.g when using the thread-loader
   // fallback to the fs module
   const FS = this.fs || fs;
   const toDepDetails = (dep, mapCallback) => {
-    FS.stat(dep, (err, stats) => {
-      if (err) {
-        mapCallback(err);
+    computeDepDetails(FS, options, dep, (detailsErr, details) => {
+      if (detailsErr) {
+        mapCallback(detailsErr);
         return;
-      }
-
-      const mtime = stats.mtime.getTime();
-
-      if (mtime / 1000 >= Math.floor(data.startTime / 1000)) {
-        // Don't trust mtime.
-        // File was changed while compiling
-        // or it could be an inaccurate filesystem.
-        cache = false;
       }
 
       mapCallback(null, {
         path: pathWithCacheContext(options.cacheContext, dep),
-        mtime,
+        ...details,
       });
     });
   };
@@ -160,10 +151,8 @@ function pitch(remainingRequest, prevRequest, dataInput) {
   const {
     cacheContext,
     cacheKey: cacheKeyFn,
-    compare: compareFn,
+    compareMode,
     read: readFn,
-    readOnly,
-    precision,
   } = options;
 
   const callback = this.async();
@@ -198,42 +187,33 @@ function pitch(remainingRequest, prevRequest, dataInput) {
           path: pathWithCacheContext(options.cacheContext, dep.path),
         };
 
-        FS.stat(contextDep.path, (statErr, stats) => {
-          if (statErr) {
-            eachCallback(statErr);
-            return;
+        computeDepDetails(
+          FS,
+          options,
+          contextDep.path,
+          (detailsErr, details) => {
+            if (detailsErr) {
+              eachCallback(detailsErr);
+              return;
+            }
+
+            if (!details) {
+              eachCallback();
+              return;
+            }
+
+            if (
+              compareMode in contextDep &&
+              contextDep[compareMode] === details[compareMode]
+            ) {
+              // Read from cache
+              eachCallback();
+            } else {
+              // Do not read from cache
+              eachCallback(true);
+            }
           }
-
-          // When we are under a readOnly config on cache-loader
-          // we don't want to emit any other error than a
-          // file stat error
-          if (readOnly) {
-            eachCallback();
-            return;
-          }
-
-          const compStats = stats;
-          const compDep = contextDep;
-          if (precision > 1) {
-            ['atime', 'mtime', 'ctime', 'birthtime'].forEach((key) => {
-              const msKey = `${key}Ms`;
-              const ms = roundMs(stats[msKey], precision);
-
-              compStats[msKey] = ms;
-              compStats[key] = new Date(ms);
-            });
-
-            compDep.mtime = roundMs(dep.mtime, precision);
-          }
-
-          // If the compare function returns false
-          // we not read from cache
-          if (compareFn(compStats, compDep) !== true) {
-            eachCallback(true);
-            return;
-          }
-          eachCallback();
-        });
+        );
       },
       (err) => {
         if (err) {
@@ -253,6 +233,51 @@ function pitch(remainingRequest, prevRequest, dataInput) {
       }
     );
   });
+}
+
+function computeDepDetails(FS, options, depPath, callback) {
+  const { compareMode, readOnly, precision } = options;
+
+  switch (compareMode) {
+    case 'mtime': {
+      FS.stat(depPath, (statErr, stats) => {
+        if (statErr) {
+          callback(statErr);
+          return;
+        }
+
+        // When we are under a readOnly config on cache-loader
+        // we don't want to emit any other error than a
+        // file stat error
+        if (readOnly) {
+          callback();
+          return;
+        }
+
+        let mtime = stats.mtimeMs;
+        if (precision > 1) {
+          mtime = roundMs(mtime, precision);
+        }
+
+        callback(null, { mtime });
+      });
+      break;
+    }
+    case 'hash': {
+      FS.readFile(depPath, (err, data) => {
+        if (err) {
+          callback(err);
+          return;
+        }
+        const hash = crypto.createHash('md5');
+        hash.update(data);
+        callback(null, { hash: hash.digest('hex') });
+      });
+      break;
+    }
+    default:
+      throw new Error('unsupported compareMode');
+  }
 }
 
 function digest(str) {
@@ -306,10 +331,6 @@ function cacheKey(options, request) {
   const hash = digest(`${cacheIdentifier}\n${request}`);
 
   return path.join(cacheDirectory, `${hash}.json`);
-}
-
-function compare(stats, dep) {
-  return stats.mtime.getTime() === dep.mtime;
 }
 
 export const raw = true;
