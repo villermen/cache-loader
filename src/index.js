@@ -276,7 +276,7 @@ function computeDepDetails(FS, options, depPath, callback) {
       break;
     }
     default:
-      throw new Error('unsupported compareMode');
+      throw new Error(`unsupported compareMode "${compareMode}".`);
   }
 }
 
